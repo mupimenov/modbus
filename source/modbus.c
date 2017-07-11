@@ -1194,6 +1194,8 @@ int modbus_io(struct modbus_instance *instance)
 		req.data = &packet[MODBUS_TCP_DATA_OFFSET];
 		req.dlen = plen - MODBUS_TCP_FUNCTION_OFFSET;
 		break;
+  default:
+    MODBUS_RETURN(instance, MODBUS_INVAL);
 	}
 
 	if (functions->open)
