@@ -263,9 +263,11 @@ size_t modbus_start_answer(struct modbus_instance *instance, uint8_t function)
 		instance->send_buffer[MODBUS_RTU_FUNCTION_OFFSET] = function;
 		return 2;
 	case MODBUS_TCP:
-		memcpy(instance->send_buffer, instance->recv_buffer, MODBUS_TCP_MBAP_SIZE);
+		memcpy(instance->send_buffer, instance->recv_buffer, MODBUS_TCP_FUNCTION_OFFSET);
 		instance->send_buffer[MODBUS_TCP_FUNCTION_OFFSET] = function;
 		return (MODBUS_TCP_FUNCTION_OFFSET + 1);
+  default:
+    return 0;
 	}
 }
 
