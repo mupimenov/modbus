@@ -351,18 +351,23 @@ static int _modbus_read_io_status(uint16_t address, int count,
     return offset;
 }
 
-static int _modbus_find_bits_table(const struct modbus_bits_table *tables,
+static int _modbus_find_bits(const struct modbus_bits_subtable *table,
 		uint16_t address, uint16_t count, uint8_t **bits)
 {
-	int i = 0;
-	while (tables[i].address != 0
-			|| tables[i].count != 0
-			|| tables[i].bits != NULL)
+	uint16_t i = 0;
+  uint16_t last_address = address + count;
+  
+  if (!table)
+    return -1;
+  
+	while (table[i].address != 0
+			|| table[i].count != 0
+			|| table[i].bits != NULL)
 	{
-		if (address >= tables[i].address
-				&& count <= tables[i].count)
+		if ((address >= table[i].address && address < (table[i].address + table[i].count))
+				&& (last_address > table[i].address && last_address <= (table[i].address + table[i].count)))
 		{
-			*bits = tables[i].bits;
+			*bits = table[i].bits;
 			return 0;
 		}
 		++i;
@@ -377,6 +382,7 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
 	struct modbus_read_command command;
 	const struct modbus_functions *functions = instance->functions;
 	size_t len;
+  size_t i;
 	uint8_t *bits;
 
 	int ret = modbus_parse_read_command(req->data, req->dlen, &command);
@@ -394,13 +400,16 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_bits_table((table == MODBUS_TABLE_COILS? instance->coil_tables: instance->discrete_tables),
-			command.address, command.count, &bits) < 0)
-	{
-		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
+  for (i = 0; i < command.count; ++i)
+  {
+    if (_modbus_find_bits((table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table),
+        command.address + i, 1U, &bits) < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
-		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-	}
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    }
+  }
 
 	if (functions->before_read_table)
 	{
@@ -415,7 +424,12 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
 	if (functions->lock)
 		functions->lock(instance, table, MODBUS_LOCK);
 
-	len = _modbus_read_io_status(command.address, command.count, bits, instance->send_buffer, len);
+  for (i = 0; i < command.count; ++i)
+  {
+    (void)_modbus_find_bits((table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table),
+        command.address + i, 1U, &bits);
+    len = _modbus_read_io_status(command.address + i, 1U, bits, instance->send_buffer, len);
+  }
 
 	if (functions->lock)
 		functions->lock(instance, table, MODBUS_UNLOCK);
@@ -435,19 +449,24 @@ static int modbus_read_discrete_inputs_cmd(struct modbus_instance *instance, str
 	return _modbus_read_bits(instance, req, MODBUS_TABLE_DISCRETE_INPUTS);
 }
 
-static int _modbus_find_regs_table(const struct modbus_regs_table *tables,
+static int _modbus_find_regs(const struct modbus_regs_subtable *table,
 		uint16_t address, uint16_t count, uint16_t **regs, uint16_t *offset)
 {
-	int i = 0;
-	while (tables[i].address != 0
-			|| tables[i].count != 0
-			|| tables[i].regs != NULL)
+	uint16_t i = 0;
+  uint16_t last_address = address + count;
+  
+  if (!table)
+    return -1;
+  
+	while (table[i].address != 0
+			|| table[i].count != 0
+			|| table[i].regs != NULL)
 	{
-		if (address >= tables[i].address
-				&& count <= tables[i].count)
+		if ((address >= table[i].address && address < (table[i].address + table[i].count))
+				&& (last_address > table[i].address && last_address <= (table[i].address + table[i].count)))
 		{
-			*regs = tables[i].regs;
-			*offset = address - tables[i].address;
+			*regs = table[i].regs;
+			*offset = address - table[i].address;
 			return 0;
 		}
 		++i;
@@ -481,13 +500,16 @@ static int _modbus_read_regs(struct modbus_instance *instance, struct modbus_req
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_regs_table((table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_tables: instance->holding_tables),
-			command.address, command.count, &regs, &offset) < 0)
-	{
-		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
+  for (i = 0; i < command.count; ++i)
+  {
+    if (_modbus_find_regs((table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table),
+        command.address + i, 1U, &regs, &offset) < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
-		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-	}
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    }
+  }
 
 	if (functions->before_read_table)
 	{
@@ -502,10 +524,14 @@ static int _modbus_read_regs(struct modbus_instance *instance, struct modbus_req
 	if (functions->lock)
 		functions->lock(instance, table, MODBUS_LOCK);
 
-	for (i = command.address; i < command.address + command.count; i++, offset++) {
-		instance->send_buffer[len++] = regs[offset] >> 8;
-		instance->send_buffer[len++] = regs[offset] & 0xFF;
-	}
+  for (i = 0; i < command.count; ++i)
+  {
+    (void)_modbus_find_regs((table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table),
+        command.address + i, 1U, &regs, &offset);
+    
+    instance->send_buffer[len++] = regs[offset] >> 8;
+    instance->send_buffer[len++] = regs[offset] & 0xFF;
+  }
 
 	if (functions->lock)
 		functions->lock(instance, table, MODBUS_UNLOCK);
@@ -565,7 +591,7 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_bits_table(instance->coil_tables, command.address, 1, &bits) < 0)
+	if (_modbus_find_bits(instance->coil_table, command.address, 1U, &bits) < 0)
 	{
 		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
@@ -575,14 +601,14 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
 
-	bits[command.address] = command.data? 1: 0;
+	bits[command.address] = command.data? 1U: 0U;
 
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_UNLOCK);
 
 	if (functions->after_write_table)
 	{
-		ret = functions->after_write_table(instance, MODBUS_TABLE_COILS, command.address, 1);
+		ret = functions->after_write_table(instance, MODBUS_TABLE_COILS, command.address, 1U);
 		if (ret < 0)
 			MODBUS_RETURN(instance, MODBUS_INT);
 	}
@@ -629,7 +655,7 @@ static int modbus_write_register_cmd(struct modbus_instance *instance, struct mo
 		MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
 	}
 
-	if (_modbus_find_regs_table(instance->holding_tables, command.address, 1, &regs, &offset) < 0)
+	if (_modbus_find_regs(instance->holding_table, command.address, 1U, &regs, &offset) < 0)
 	{
 		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
@@ -646,7 +672,7 @@ static int modbus_write_register_cmd(struct modbus_instance *instance, struct mo
 
 	if (functions->after_write_table)
 	{
-		ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1);
+		ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
 		if (ret < 0)
 			MODBUS_RETURN(instance, MODBUS_INT);
 	}
@@ -700,6 +726,7 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
 	struct modbus_write_multiple_command command;
 	const struct modbus_functions *functions = instance->functions;
 	size_t len;
+  size_t i;
 	uint8_t *bits;
 
 	int ret = modbus_parse_write_multiple_command(req->data, req->dlen, &command);
@@ -717,17 +744,24 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_bits_table(instance->coil_tables, command.address, command.count, &bits) < 0)
-	{
-		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
+  for (i = 0; i < command.count; ++i)
+  {
+    if (_modbus_find_bits(instance->coil_table, command.address + i, 1U, &bits) < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
-		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-	}
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    }
+  }
 
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
 
-	_modbus_set_bits_from_bytes(bits, command.address, command.count, req->data + MODBUS_WRITE_MULTIPLE_DATA_OFFSET);
+  for (i = 0; i < command.count; ++i)
+  {
+    (void)_modbus_find_bits(instance->coil_table, command.address + i, 1U, &bits);
+    _modbus_set_bits_from_bytes(bits, command.address + i, 1U, req->data + MODBUS_WRITE_MULTIPLE_DATA_OFFSET);
+  }
 
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_UNLOCK);
@@ -772,21 +806,26 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_regs_table(instance->holding_tables, command.address, command.count, &regs, &offset) < 0)
-	{
-		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
+  for (i = 0; i < command.count; ++i)
+  {
+    if (_modbus_find_regs(instance->holding_table, command.address + i, 1U, &regs, &offset) < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
-		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-	}
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    }
+  }
 
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_LOCK);
 
-	for (i = command.address, j = 0; i < command.address + command.count; i++, j += 2, offset++) {
-		/* 6 and 7 = first value */
-		regs[offset] = (req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j] << 8)
-							+ req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j + 1];
-	}
+  for (i = 0, j = 0; i < command.count; ++i, j += 2)
+  {
+    (void)_modbus_find_regs(instance->holding_table, command.address + i, 1U, &regs, &offset);
+    /* 6 and 7 = first value */
+    regs[offset] = (req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j] << 8)
+      + req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j + 1];
+  }
 
 	if (functions->lock)
 		functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_UNLOCK);
@@ -1007,7 +1046,7 @@ static int modbus_mask_write_reg_cmd(struct modbus_instance *instance, struct mo
 		MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
 	}
 
-	if (_modbus_find_regs_table(instance->holding_tables, command.address, 1, &regs, &offset) < 0)
+	if (_modbus_find_regs(instance->holding_table, command.address, 1U, &regs, &offset) < 0)
 	{
 		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 
@@ -1026,7 +1065,7 @@ static int modbus_mask_write_reg_cmd(struct modbus_instance *instance, struct mo
 
 	if (functions->after_write_table)
 	{
-		ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1);
+		ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
 		if (ret < 0)
 			MODBUS_RETURN(instance, MODBUS_INT);
 	}
@@ -1091,8 +1130,8 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
 		MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
 	}
 
-	if (_modbus_find_regs_table(instance->holding_tables, command.read_address, command.read_count, &read_regs, &read_offset) < 0
-			|| _modbus_find_regs_table(instance->holding_tables, command.write_address, command.write_count, &write_regs, &write_offset) < 0)
+	if (_modbus_find_regs(instance->holding_table, command.read_address, command.read_count, &read_regs, &read_offset) < 0
+			|| _modbus_find_regs(instance->holding_table, command.write_address, command.write_count, &write_regs, &write_offset) < 0)
 	{
 		modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS);
 

@@ -73,7 +73,7 @@ struct modbus_answer {
 	enum modbus_answer_error error;
 	enum modbus_answer_data_type dtype;
 	uint8_t *data;
-	uint8_t dlen;
+	uint16_t dlen;
 };
 
 enum modbus_table {
@@ -88,13 +88,13 @@ enum modbus_lock_type {
 	MODBUS_UNLOCK
 };
 
-struct modbus_bits_table {
+struct modbus_bits_subtable {
 	uint16_t address;
 	uint16_t count;
 	uint8_t *bits;
 };
 
-struct modbus_regs_table {
+struct modbus_regs_subtable {
 	uint16_t address;
 	uint16_t count;
 	uint16_t *regs;
@@ -112,14 +112,14 @@ struct modbus_instance {
 	void *arg;
 	uint8_t *recv_buffer;
 	uint8_t *send_buffer;
-	uint8_t recv_buffer_size;
-	uint8_t send_buffer_size;
+	uint16_t recv_buffer_size;
+	uint16_t send_buffer_size;
 
 	// tables
-	const struct modbus_bits_table *coil_tables;
-	const struct modbus_bits_table *discrete_tables;
-	const struct modbus_regs_table *input_tables;
-	const struct modbus_regs_table *holding_tables;
+	const struct modbus_bits_subtable *coil_table;
+	const struct modbus_bits_subtable *discrete_table;
+	const struct modbus_regs_subtable *input_table;
+	const struct modbus_regs_subtable *holding_table;
 
 	// functions
 	const struct modbus_functions *functions;
@@ -137,8 +137,8 @@ struct modbus_instance {
 struct modbus_functions {
 	// io
 	int (*open)(struct modbus_instance *instance);
-	int (*write)(struct modbus_instance *instance, const uint8_t *packet, uint8_t plen);
-	int (*read)(struct modbus_instance *instance, uint8_t *buffer, uint8_t max_size);
+	int (*write)(struct modbus_instance *instance, const uint8_t *packet, uint16_t plen);
+	int (*read)(struct modbus_instance *instance, uint8_t *buffer, uint16_t maxsize);
 	int (*close)(struct modbus_instance *instance);
 
 	// locks
