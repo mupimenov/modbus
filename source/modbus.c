@@ -249,6 +249,7 @@ static uint16_t crc16(const uint8_t *buffer, uint16_t buffer_length)
 #define MODBUS_TCP_TRANSACTION_ID_OFFSET 0x00
 #define MODBUS_TCP_PROTOCOL_OFFSET 0x02
 #define MODBUS_TCP_LENGTH_OFFSET 0x04
+#define MODBUS_TCP_UNIT_IDENT_OFFSET 0x06
 #define MODBUS_TCP_FUNCTION_OFFSET 0x07
 #define MODBUS_TCP_DATA_OFFSET 0x08
 
@@ -265,7 +266,7 @@ size_t modbus_start_answer(struct modbus_instance *instance, uint8_t function)
 	case MODBUS_TCP:
 		memcpy(instance->send_buffer, instance->recv_buffer, MODBUS_TCP_FUNCTION_OFFSET);
 		instance->send_buffer[MODBUS_TCP_FUNCTION_OFFSET] = function;
-		return (MODBUS_TCP_FUNCTION_OFFSET + 1);
+		return (MODBUS_TCP_FUNCTION_OFFSET+1);
   default:
     return 0;
 	}
@@ -1231,7 +1232,7 @@ int modbus_io(struct modbus_instance *instance)
 		req.address = instance->address; /* address is not used */
 		req.function = (enum modbus_request_function)packet[MODBUS_TCP_FUNCTION_OFFSET];
 		req.data = &packet[MODBUS_TCP_DATA_OFFSET];
-		req.dlen = plen - MODBUS_TCP_FUNCTION_OFFSET;
+		req.dlen = plen - MODBUS_TCP_FUNCTION_OFFSET - 1;
 		break;
   default:
     MODBUS_RETURN(instance, MODBUS_INVAL);
