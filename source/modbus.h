@@ -51,6 +51,13 @@ extern "C" {
     uint16_t dlen;
   };
   
+  struct modbus_answer {
+    uint8_t address;
+    enum modbus_request_function function;
+    const uint8_t *data;
+    uint16_t dlen;
+  };
+  
   enum modbus_answer_error {
     MODBUS_ERROR_OK                     = 0x00,
     
@@ -69,12 +76,12 @@ extern "C" {
     MODBUS_DATA_TYPE_HALF_WORD
   };
   
-  struct modbus_answer {
-    enum modbus_answer_error error;
-    enum modbus_answer_data_type dtype;
-    uint8_t *data;
-    uint16_t dlen;
-  };
+  //struct modbus_answer {
+  //  enum modbus_answer_error error;
+  //  enum modbus_answer_data_type dtype;
+  //  uint8_t *data;
+  //  uint16_t dlen;
+  //};
   
   enum modbus_table {
     MODBUS_TABLE_COILS,
@@ -170,6 +177,16 @@ extern "C" {
   
   int modbus_io(struct modbus_instance *instance);
   
+  int modbus_read_coils(struct modbus_instance *instance, uint16_t device_address, uint16_t coils_address, uint16_t coils_count, uint8_t *data, uint32_t *error);
+  int modbus_read_discrete_inputs(struct modbus_instance *instance, uint16_t device_address, uint16_t discretes_address, uint16_t discretes_count, uint8_t *data, uint32_t *error);
+  int modbus_read_holding_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t holdings_address, uint16_t holdings_count, uint16_t *data, uint32_t *error);
+  int modbus_read_input_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t inputs_address, uint16_t inputs_count, uint16_t *data, uint32_t *error);
+  
+  int modbus_write_coils(struct modbus_instance *instance, uint16_t device_address, uint16_t coils_address, uint16_t coils_count, const uint8_t *data, uint32_t *error);
+  int modbus_write_holding_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t holdings_address, uint16_t holdings_count, const uint16_t *data, uint32_t *error);
+  
+
+  uint16_t modbus_crc16(const uint8_t *buffer, uint16_t buffer_length);
 #ifdef __cplusplus
 }
 #endif

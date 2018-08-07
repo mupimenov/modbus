@@ -40,6 +40,7 @@ typedef struct modbus_read_command {
 } modbus_read_command_t;
 
 static int modbus_parse_read_command(const uint8_t *data, uint8_t dlen, struct modbus_read_command *command);
+static int modbus_put_read_command(const struct modbus_read_command *command, uint8_t *data, uint8_t dlen);
 
 /* MODBUS_READ_COILS */
 
@@ -92,6 +93,7 @@ typedef struct modbus_write_multiple_command {
 } modbus_write_multiple_command_t;
 
 static int modbus_parse_write_multiple_command(const uint8_t *data, uint8_t dlen, struct modbus_write_multiple_command *command);
+static int modbus_put_write_multiple_command(const struct modbus_write_multiple_command *command, uint8_t *data, uint8_t dlen);
 
 /* MODBUS_WRITE_MULTIPLE_COILS */
 
@@ -257,6 +259,66 @@ static uint16_t crc16(const uint8_t *buffer, uint16_t buffer_length)
 
 #define MODBUS_TCP_PROTOCOL_ID 0x0000
 
+static int modbus_receive_request(struct modbus_instance *instance, struct modbus_request *req)
+{
+  const struct modbus_functions *functions = instance->functions;
+  uint8_t *packet;
+  int plen;
+  
+  uint16_t crc_calculated;
+  uint16_t crc_received;
+  
+  if (!functions)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  if (!functions->read)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  if (!instance->recv_buffer)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  packet = instance->recv_buffer;
+  plen = functions->read(instance, packet, instance->recv_buffer_size);
+  
+  switch (instance->transport)
+  {
+  case MODBUS_RTU:
+    if (plen < MODBUS_RTU_PACKET_MIN_LEN)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    crc_calculated = crc16(packet, plen - 2);
+    crc_received = (packet[plen - 2] << 8) | packet[plen - 1];
+    
+    if (crc_calculated != crc_received)
+      MODBUS_RETURN(instance, MODBUS_BAD_CRC);
+    
+    if (packet[MODBUS_RTU_ADDRESS_OFFSET] != instance->address)
+      MODBUS_RETURN(instance, MODBUS_BAD_ADDRESS);
+    
+    req->address = packet[MODBUS_RTU_ADDRESS_OFFSET];
+    req->function = (enum modbus_request_function)packet[MODBUS_RTU_FUNCTION_OFFSET];
+    req->data = &packet[MODBUS_RTU_DATA_OFFSET];
+    req->dlen = plen - MODBUS_RTU_DATA_OFFSET - 2;
+    break;
+  case MODBUS_TCP:
+    if (plen < MODBUS_TCP_PACKET_MIN_LEN)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    if (((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET] << 8) | ((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET + 1]) != MODBUS_TCP_PROTOCOL_ID)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    req->address = instance->address; /* address is not used */
+    req->function = (enum modbus_request_function)packet[MODBUS_TCP_FUNCTION_OFFSET];
+    req->data = &packet[MODBUS_TCP_DATA_OFFSET];
+    req->dlen = plen - MODBUS_TCP_DATA_OFFSET;
+    break;
+  default:
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
 static size_t modbus_start_answer(struct modbus_instance *instance, uint8_t function)
 {
   switch (instance->transport)
@@ -323,6 +385,121 @@ static int modbus_send_error(struct modbus_instance *instance, uint8_t function,
   return modbus_send_answer(instance, len, broadcast);
 }
 
+static size_t modbus_start_request(struct modbus_instance *instance, uint8_t address, uint8_t function)
+{
+  switch (instance->transport)
+  {
+  case MODBUS_RTU:
+    instance->send_buffer[MODBUS_RTU_ADDRESS_OFFSET] =          address;
+    instance->send_buffer[MODBUS_RTU_FUNCTION_OFFSET] =         function;
+    return 2;
+  case MODBUS_TCP:
+    instance->send_buffer[MODBUS_TCP_TRANSACTION_ID_OFFSET] =   0;
+    instance->send_buffer[MODBUS_TCP_TRANSACTION_ID_OFFSET+1] = 0;
+    instance->send_buffer[MODBUS_TCP_PROTOCOL_OFFSET] =         0;
+    instance->send_buffer[MODBUS_TCP_PROTOCOL_OFFSET+1] =       0;
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET] =           0;
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET+1] =         0;
+    instance->send_buffer[MODBUS_TCP_UNIT_IDENT_OFFSET] =       0;
+    instance->send_buffer[MODBUS_TCP_FUNCTION_OFFSET] =         function;
+    return (MODBUS_TCP_FUNCTION_OFFSET+1);
+  default:
+    return 0;
+  }
+}
+
+static size_t modbus_end_request(struct modbus_instance *instance, size_t len)
+{
+  uint16_t crc_calculated;
+  
+  switch (instance->transport)
+  {
+  case MODBUS_RTU:
+    crc_calculated = crc16(instance->send_buffer, len);
+    
+    instance->send_buffer[len++] = (crc_calculated >> 8);
+    instance->send_buffer[len++] = crc_calculated;
+    
+    break;
+  case MODBUS_TCP:
+    (void)crc_calculated;
+    
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET] = (len-MODBUS_TCP_FUNCTION_OFFSET-1) >> 8;
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET + 1] = (len-MODBUS_TCP_FUNCTION_OFFSET-1) & 0xFF;
+    
+    break;
+  }
+  
+  return len;
+}
+
+static int modbus_send_request(struct modbus_instance *instance, size_t len)
+{
+  const struct modbus_functions *functions = instance->functions;
+
+  return functions->write(instance, instance->send_buffer, len);
+}
+
+static int modbus_receive_answer(struct modbus_instance *instance, struct modbus_answer *answ)
+{
+  const struct modbus_functions *functions = instance->functions;
+  uint8_t *packet;
+  int plen;
+  
+  uint16_t crc_calculated;
+  uint16_t crc_received;
+  
+  if (!functions)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  if (!functions->read)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  if (!instance->recv_buffer)
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  
+  packet = instance->recv_buffer;
+  plen = functions->read(instance, packet, instance->recv_buffer_size);
+  
+  switch (instance->transport)
+  {
+  case MODBUS_RTU:
+    if (plen < MODBUS_RTU_PACKET_MIN_LEN)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    crc_calculated = crc16(packet, plen - 2);
+    crc_received = (packet[plen - 2] << 8) | packet[plen - 1];
+    
+    if (crc_calculated != crc_received)
+      MODBUS_RETURN(instance, MODBUS_BAD_CRC);
+    
+    if (packet[MODBUS_RTU_ADDRESS_OFFSET] != instance->address)
+      MODBUS_RETURN(instance, MODBUS_BAD_ADDRESS);
+    
+    answ->address = packet[MODBUS_RTU_ADDRESS_OFFSET];
+    answ->function = (enum modbus_request_function)packet[MODBUS_RTU_FUNCTION_OFFSET];
+    answ->data = &packet[MODBUS_RTU_DATA_OFFSET];
+    answ->dlen = plen - MODBUS_RTU_DATA_OFFSET - 2;
+    break;
+  case MODBUS_TCP:
+    if (plen < MODBUS_TCP_PACKET_MIN_LEN)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    if (((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET] << 8) | ((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET + 1]) != MODBUS_TCP_PROTOCOL_ID)
+      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
+    
+    answ->address = 0; /* address is not used */
+    answ->function = (enum modbus_request_function)packet[MODBUS_TCP_FUNCTION_OFFSET];
+    answ->data = &packet[MODBUS_TCP_DATA_OFFSET];
+    answ->dlen = plen - MODBUS_TCP_DATA_OFFSET - 2;
+    break;
+  default:
+    MODBUS_RETURN(instance, MODBUS_INVAL);
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
 #define MODBUS_READ_CMD_ADDRESS_OFFSET 0x00
 #define MODBUS_READ_CMD_COUNT_OFFSET 0x02
 
@@ -339,6 +516,18 @@ static int modbus_parse_read_command(const uint8_t *data, uint8_t dlen,
   command->count = data[MODBUS_READ_CMD_COUNT_OFFSET + 1] | (data[MODBUS_READ_CMD_COUNT_OFFSET] << 8);
   
   return 0;
+}
+
+static int modbus_put_read_command(const struct modbus_read_command * command,
+                                   uint8_t *data, uint8_t dlen)
+{
+  data[MODBUS_READ_CMD_ADDRESS_OFFSET] =      command->address >> 8;
+  data[MODBUS_READ_CMD_ADDRESS_OFFSET + 1] =  command->address;
+  
+  data[MODBUS_READ_CMD_COUNT_OFFSET] =        command->count >> 8;
+  data[MODBUS_READ_CMD_COUNT_OFFSET + 1] =    command->count;
+  
+  return (dlen + 4);
 }
 
 static int _modbus_read_io_status(uint16_t address, int count,
@@ -719,6 +908,20 @@ static int modbus_parse_write_multiple_command(const uint8_t *data, uint8_t dlen
   command->bytes = data[MODBUS_WRITE_MULTIPLE_CMD_BYTES_OFFSET];
   
   return 0;
+}
+
+static int modbus_put_write_multiple_command(const struct modbus_write_multiple_command *command, 
+                                             uint8_t *data, uint8_t dlen)
+{
+  data[MODBUS_WRITE_MULTIPLE_CMD_ADDRESS_OFFSET] =      command->address >> 8;
+  data[MODBUS_WRITE_MULTIPLE_CMD_ADDRESS_OFFSET + 1] =  command->address;
+  
+  data[MODBUS_WRITE_MULTIPLE_CMD_COUNT_OFFSET] =        command->count >> 8;
+  data[MODBUS_WRITE_MULTIPLE_CMD_COUNT_OFFSET + 1] =    command->count;
+  
+  data[MODBUS_WRITE_MULTIPLE_CMD_BYTES_OFFSET] =        command->bytes;
+  
+  return (dlen + 5);
 }
 
 static void _modbus_set_bits_from_bytes(uint8_t *tbits, uint16_t address, uint16_t count,
@@ -1195,62 +1398,16 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
 
 int modbus_io(struct modbus_instance *instance)
 {
-  uint16_t crc_calculated;
-  uint16_t crc_received;
-  uint8_t *packet;
-  const struct modbus_functions *functions;
-  int plen;
+  const struct modbus_functions *functions = instance->functions;
   struct modbus_request req;
   int ret;
   
   if (!instance)
     return -1;
   
-  functions = instance->functions;
-  if (!functions)
-    MODBUS_RETURN(instance, MODBUS_INVAL);
-  
-  if (!instance->functions->read)
-    MODBUS_RETURN(instance, MODBUS_INVAL);
-  
-  packet = instance->recv_buffer;
-  plen = functions->read(instance, packet, instance->recv_buffer_size);
-  
-  switch (instance->transport)
-  {
-  case MODBUS_RTU:
-    if (plen < MODBUS_RTU_PACKET_MIN_LEN)
-      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
-    
-    crc_calculated = crc16(packet, plen - 2);
-    crc_received = (packet[plen - 2] << 8) | packet[plen - 1];
-    
-    if (crc_calculated != crc_received)
-      MODBUS_RETURN(instance, MODBUS_BAD_CRC);
-    
-    if (packet[MODBUS_RTU_ADDRESS_OFFSET] != instance->address)
-      MODBUS_RETURN(instance, MODBUS_BAD_ADDRESS);
-    
-    req.address = packet[MODBUS_RTU_ADDRESS_OFFSET];
-    req.function = (enum modbus_request_function)packet[MODBUS_RTU_FUNCTION_OFFSET];
-    req.data = &packet[MODBUS_RTU_DATA_OFFSET];
-    req.dlen = plen - MODBUS_RTU_DATA_OFFSET - 2;
-    break;
-  case MODBUS_TCP:
-    if (plen < MODBUS_TCP_PACKET_MIN_LEN)
-      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
-    
-    if (((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET] << 8) | ((uint16_t)packet[MODBUS_TCP_PROTOCOL_OFFSET + 1]) != MODBUS_TCP_PROTOCOL_ID)
-      MODBUS_RETURN(instance, MODBUS_NO_PACKET);
-    
-    req.address = instance->address; /* address is not used */
-    req.function = (enum modbus_request_function)packet[MODBUS_TCP_FUNCTION_OFFSET];
-    req.data = &packet[MODBUS_TCP_DATA_OFFSET];
-    req.dlen = plen - MODBUS_TCP_FUNCTION_OFFSET - 1;
-    break;
-  default:
-    MODBUS_RETURN(instance, MODBUS_INVAL);
-  }
+  ret = modbus_receive_request(instance, &req);
+  if (ret < 0)
+    return ret;
   
   if (functions->open)
   {
@@ -1321,4 +1478,344 @@ int modbus_io(struct modbus_instance *instance)
     (void)functions->close(instance);
   
   return ret;
+}
+
+#define MODBUS_READ_COILS_BYTES_OFFSET 0
+#define MODBUS_READ_COILS_DATA_OFFSET 1
+
+int modbus_read_coils(struct modbus_instance *instance, uint16_t device_address, uint16_t coils_address, uint16_t coils_count, uint8_t *data, uint32_t *error)
+{
+  struct modbus_read_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  uint8_t bytes;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_READ_COILS);
+  
+  command.address = coils_address;
+  command.count = coils_count;
+  len = modbus_put_read_command(&command, instance->send_buffer + len, len);
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_READ_COILS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_READ_COILS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  bytes = answ.data[MODBUS_READ_COILS_BYTES_OFFSET];
+  
+  for (i = 0; (i < bytes) && coils_count; ++i)
+  {
+    uint8_t d = answ.data[MODBUS_READ_COILS_DATA_OFFSET + i];
+    size_t j;
+    
+    for (j = 0; (j < 8) && coils_count; ++j)
+    {
+      *data++ = (d >> j) & 1u;
+      --coils_count;
+    }
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+#define MODBUS_READ_DISCRETE_INPUTS_BYTES_OFFSET 0
+#define MODBUS_READ_DISCRETE_INPUTS_DATA_OFFSET 1
+
+int modbus_read_discrete_inputs(struct modbus_instance *instance, uint16_t device_address, uint16_t discretes_address, uint16_t discretes_count, uint8_t *data, uint32_t *error)
+{
+  struct modbus_read_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  uint8_t bytes;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_READ_DISCRETE_INPUTS);
+  
+  command.address = discretes_address;
+  command.count = discretes_count;
+  len = modbus_put_read_command(&command, instance->send_buffer + len, len);
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_READ_DISCRETE_INPUTS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_READ_DISCRETE_INPUTS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  bytes = answ.data[MODBUS_READ_DISCRETE_INPUTS_BYTES_OFFSET];
+  
+  for (i = 0; (i < bytes) && discretes_count; ++i)
+  {
+    uint8_t d = answ.data[MODBUS_READ_DISCRETE_INPUTS_DATA_OFFSET + i];
+    size_t j;
+    
+    for (j = 0; (j < 8) && discretes_count; ++j)
+    {
+      *data++ = (d >> j) & 1u;
+      --discretes_count;
+    }
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+#define MODBUS_READ_HOLDING_REGISTERS_BYTES_OFFSET 0
+#define MODBUS_READ_HOLDING_REGISTERS_DATA_OFFSET 1
+
+int modbus_read_holding_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t holdings_address, uint16_t holdings_count, uint16_t *data, uint32_t *error)
+{
+  struct modbus_read_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  uint8_t bytes;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_READ_HOLDING_REGISTERS);
+  
+  command.address = holdings_address;
+  command.count = holdings_count;
+  len = modbus_put_read_command(&command, instance->send_buffer + len, len);
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_READ_HOLDING_REGISTERS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_READ_HOLDING_REGISTERS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  bytes = answ.data[MODBUS_READ_HOLDING_REGISTERS_BYTES_OFFSET];
+  
+  for (i = 0; (i < bytes) && holdings_count; i = i + 2u)
+  {
+    uint16_t d = (((uint16_t)answ.data[MODBUS_READ_HOLDING_REGISTERS_DATA_OFFSET + i]) << 8)
+      | ((uint16_t)answ.data[MODBUS_READ_HOLDING_REGISTERS_DATA_OFFSET + i + 1]);
+    
+    *data++ = d;
+    --holdings_count;
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+#define MODBUS_READ_INPUT_REGISTERS_BYTES_OFFSET 0
+#define MODBUS_READ_INPUT_REGISTERS_DATA_OFFSET 1
+
+int modbus_read_input_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t inputs_address, uint16_t inputs_count, uint16_t *data, uint32_t *error)
+{
+  struct modbus_read_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  uint8_t bytes;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_READ_INPUT_REGISTERS);
+  
+  command.address = inputs_address;
+  command.count = inputs_count;
+  len = modbus_put_read_command(&command, instance->send_buffer + len, len);
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_READ_INPUT_REGISTERS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_READ_INPUT_REGISTERS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  bytes = answ.data[MODBUS_READ_INPUT_REGISTERS_BYTES_OFFSET];
+  
+  for (i = 0; (i < bytes) && inputs_count; i = i + 2u)
+  {
+    uint16_t d = (((uint16_t)answ.data[MODBUS_READ_INPUT_REGISTERS_DATA_OFFSET + i]) << 8)
+      | ((uint16_t)answ.data[MODBUS_READ_INPUT_REGISTERS_DATA_OFFSET + i + 1]);
+    
+    *data++ = d;
+    --inputs_count;
+  }
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+#define MODBUS_WRITE_COILS_BYTES_OFFSET 0
+#define MODBUS_WRITE_COILS_DATA_OFFSET 1
+
+int modbus_write_coils(struct modbus_instance *instance, uint16_t device_address, uint16_t coils_address, uint16_t coils_count, const uint8_t *data, uint32_t *error)
+{
+  struct modbus_write_multiple_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  uint8_t d;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_WRITE_MULTIPLE_COILS);
+  
+  command.address = coils_address;
+  command.count = coils_count;
+  command.bytes = (coils_count >> 8) + (coils_count & 7? 1u: 0u);
+  len = modbus_put_write_multiple_command(&command, instance->send_buffer + len, len);
+  
+  d = 0u;
+  
+  for (i = 0; i < coils_count; ++i)
+  {
+    d |= (data[i] & 1u) << (i & 7);
+    
+    if ((i & 7) == 7 || i == (coils_count - 1))
+    {
+      instance->send_buffer[len++] = d;
+      
+      d = 0u;
+    }
+  }
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_WRITE_COILS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_WRITE_MULTIPLE_COILS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  modbus_parse_write_multiple_command(answ.data, 5u, &command);
+  
+  if (command.address != coils_address
+      || command.count != coils_count)
+    MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+#define MODBUS_WRITE_HOLDING_REGISTERS_BYTES_OFFSET 0
+#define MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET 1
+
+int modbus_write_holding_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t holdings_address, uint16_t holdings_count, const uint16_t *data, uint32_t *error)
+{
+  struct modbus_write_multiple_command command;
+  struct modbus_answer answ;
+  size_t len;
+  size_t i;
+  int ret;
+  
+  len = modbus_start_request(instance, device_address, MODBUS_WRITE_MULTIPLE_REGISTERS);
+  
+  command.address = holdings_address;
+  command.count = holdings_count;
+  command.bytes = holdings_count * 2;
+  len = modbus_put_write_multiple_command(&command, instance->send_buffer + len, len);
+  
+  for (i = 0; i < holdings_count; ++i)
+  {
+    instance->send_buffer[len++] = data[i] >> 8;
+    instance->send_buffer[len++] = data[i];
+  }
+  
+  len = modbus_end_request(instance, len);
+  
+  ret = modbus_send_request(instance, len);
+  if (ret < 0)
+    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+  
+  ret = modbus_receive_answer(instance, &answ);
+  if (ret < 0)
+    return ret;
+  
+  if (answ.function & 0x80)
+  {
+    *error = answ.data[MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET];
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  }
+  
+  *error = 0u;
+  
+  if (answ.function != MODBUS_WRITE_MULTIPLE_REGISTERS)
+    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+  
+  modbus_parse_write_multiple_command(answ.data, 5u, &command);
+  
+  if (command.address != holdings_address
+      || command.count != holdings_count)
+    MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+  
+  MODBUS_RETURN(instance, MODBUS_SUCCESS);
+}
+
+uint16_t modbus_crc16(const uint8_t *buffer, uint16_t buffer_length)
+{
+  return crc16(buffer, buffer_length);
 }
