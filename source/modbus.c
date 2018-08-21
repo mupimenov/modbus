@@ -292,7 +292,7 @@ static int modbus_receive_request(struct modbus_instance *instance, struct modbu
     if (crc_calculated != crc_received)
       MODBUS_RETURN(instance, MODBUS_BAD_CRC);
     
-    if (packet[MODBUS_RTU_ADDRESS_OFFSET] != instance->address)
+    if (packet[MODBUS_RTU_ADDRESS_OFFSET] != instance->address && packet[MODBUS_RTU_ADDRESS_OFFSET] != 0u)
       MODBUS_RETURN(instance, MODBUS_BAD_ADDRESS);
     
     req->address = packet[MODBUS_RTU_ADDRESS_OFFSET];
@@ -803,6 +803,17 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_COILS, command.address, 1U);
+    if (ret < 0) 
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
   
@@ -814,8 +825,12 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
   if (functions->after_write_table)
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_COILS, command.address, 1U);
-    if (ret < 0)
+    if (ret < 0) 
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_start_answer(instance, req->function);
@@ -867,6 +882,17 @@ static int modbus_write_register_cmd(struct modbus_instance *instance, struct mo
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
+    if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_LOCK);
   
@@ -879,7 +905,11 @@ static int modbus_write_register_cmd(struct modbus_instance *instance, struct mo
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
     if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_start_answer(instance, req->function);
@@ -973,6 +1003,17 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
     }
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_COILS, command.address, command.count);
+    if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
   
@@ -989,7 +1030,11 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_COILS, command.address, command.count);
     if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_start_answer(instance, req->function);
@@ -1035,6 +1080,17 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
     }
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, command.count);
+    if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_LOCK);
   
@@ -1053,7 +1109,11 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, command.count);
     if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_start_answer(instance, req->function);
@@ -1271,6 +1331,17 @@ static int modbus_mask_write_reg_cmd(struct modbus_instance *instance, struct mo
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
+    if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_LOCK);
   
@@ -1285,7 +1356,11 @@ static int modbus_mask_write_reg_cmd(struct modbus_instance *instance, struct mo
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.address, 1U);
     if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_start_answer(instance, req->function);
@@ -1363,6 +1438,17 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
       MODBUS_RETURN(instance, MODBUS_INT);
   }
   
+  if (functions->before_write_table)
+  {
+    ret = functions->before_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.write_address, command.write_count);
+    if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
+      MODBUS_RETURN(instance, MODBUS_INT);
+    }
+  }
+  
   len = modbus_start_answer(instance, req->function);
   instance->send_buffer[len++] = command.read_count * 2;
   
@@ -1386,7 +1472,11 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
   {
     ret = functions->after_write_table(instance, MODBUS_TABLE_HOLDING_REGISTERS, command.write_address, command.write_count);
     if (ret < 0)
+    {
+      modbus_send_error(instance, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
+      
       MODBUS_RETURN(instance, MODBUS_INT);
+    }
   }
   
   len = modbus_end_answer(instance, len);

@@ -153,6 +153,7 @@ extern "C" {
     
     // hooks
     int (*before_read_table)(struct modbus_instance *instance, enum modbus_table table, uint16_t address, uint16_t count);
+    int (*before_write_table)(struct modbus_instance *instance, enum modbus_table table, uint16_t address, uint16_t count);
     int (*after_write_table)(struct modbus_instance *instance, enum modbus_table table, uint16_t address, uint16_t count);
     
     // files
