@@ -859,6 +859,17 @@ static int modbus_parse_write_reg_command(const uint8_t *data, uint8_t dlen,
   return 0;
 }
 
+static int modbus_put_write_reg_command(struct modbus_write_reg_command *command, uint8_t *data, uint16_t dlen)
+{
+  data[MODBUS_WRITE_REG_CMD_ADDRESS_OFFSET] =     command->address >> 8;
+  data[MODBUS_WRITE_REG_CMD_ADDRESS_OFFSET + 1] = command->address;
+  
+  data[MODBUS_WRITE_REG_CMD_DATA_OFFSET] =        command->data >> 8;
+  data[MODBUS_WRITE_REG_CMD_DATA_OFFSET + 1] =    command->data;
+  
+  return (dlen + 4);
+}
+
 static int modbus_write_register_cmd(struct modbus_instance *instance, struct modbus_request *req)
 {
   struct modbus_write_reg_command command;
@@ -1855,54 +1866,100 @@ int modbus_write_coils(struct modbus_instance *instance, uint16_t device_address
 #define MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET 1
 
 int modbus_write_holding_registers(struct modbus_instance *instance, uint16_t device_address, uint16_t holdings_address, uint16_t holdings_count, const uint16_t *data, uint32_t *error)
-{
-  struct modbus_write_multiple_command command;
-  struct modbus_answer answ;
-  size_t len;
-  size_t i;
-  int ret;
-  
-  len = modbus_start_request(instance, device_address, MODBUS_WRITE_MULTIPLE_REGISTERS);
-  
-  command.address = holdings_address;
-  command.count = holdings_count;
-  command.bytes = holdings_count * 2;
-  len = modbus_put_write_multiple_command(&command, instance->send_buffer + len, len);
-  
-  for (i = 0; i < holdings_count; ++i)
+{  
+  if (holdings_count == 1)
   {
-    instance->send_buffer[len++] = data[i] >> 8;
-    instance->send_buffer[len++] = data[i];
+    struct modbus_write_reg_command command;
+    struct modbus_answer answ;
+    size_t len;
+    int ret;
+    
+    len = modbus_start_request(instance, device_address, MODBUS_WRITE_SINGLE_REGISTER);
+    
+    command.address = holdings_address;
+    command.data = data[0];
+    
+    len = modbus_put_write_reg_command(&command, instance->send_buffer + len, len);
+    
+    len = modbus_end_request(instance, len);
+    
+    ret = modbus_send_request(instance, len);
+    if (ret < 0)
+      MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+    
+    ret = modbus_receive_answer(instance, &answ);
+    if (ret < 0)
+      return ret;
+    
+    if (answ.function & 0x80)
+    {
+      *error = answ.data[MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET];
+      MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+    }
+    
+    *error = 0u;
+    
+    if (answ.function != MODBUS_WRITE_SINGLE_REGISTER)
+      MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+    
+    modbus_parse_write_reg_command(answ.data, 4u, &command);
+    
+    if (command.address != holdings_address
+        || command.data != data[0])
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    
+    MODBUS_RETURN(instance, MODBUS_SUCCESS);
   }
-  
-  len = modbus_end_request(instance, len);
-  
-  ret = modbus_send_request(instance, len);
-  if (ret < 0)
-    MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
-  
-  ret = modbus_receive_answer(instance, &answ);
-  if (ret < 0)
-    return ret;
-  
-  if (answ.function & 0x80)
+  else
   {
-    *error = answ.data[MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET];
-    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+    struct modbus_write_multiple_command command;
+    struct modbus_answer answ;
+    size_t len;
+    size_t i;
+    int ret;
+    
+    len = modbus_start_request(instance, device_address, MODBUS_WRITE_MULTIPLE_REGISTERS);
+    
+    command.address = holdings_address;
+    command.count = holdings_count;
+    command.bytes = holdings_count * 2;
+    len = modbus_put_write_multiple_command(&command, instance->send_buffer + len, len);
+    
+    for (i = 0; i < holdings_count; ++i)
+    {
+      instance->send_buffer[len++] = data[i] >> 8;
+      instance->send_buffer[len++] = data[i];
+    }
+    
+    len = modbus_end_request(instance, len);
+    
+    ret = modbus_send_request(instance, len);
+    if (ret < 0)
+      MODBUS_RETURN(instance, MODBUS_DEVICE_ERROR);
+    
+    ret = modbus_receive_answer(instance, &answ);
+    if (ret < 0)
+      return ret;
+    
+    if (answ.function & 0x80)
+    {
+      *error = answ.data[MODBUS_WRITE_HOLDING_REGISTERS_DATA_OFFSET];
+      MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+    }
+    
+    *error = 0u;
+    
+    if (answ.function != MODBUS_WRITE_MULTIPLE_REGISTERS)
+      MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
+    
+    modbus_parse_write_multiple_command(answ.data, 5u, &command);
+    
+    if (command.address != holdings_address
+        || command.count != holdings_count)
+      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
+    
+    MODBUS_RETURN(instance, MODBUS_SUCCESS);
   }
-  
-  *error = 0u;
-  
-  if (answ.function != MODBUS_WRITE_MULTIPLE_REGISTERS)
-    MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
-  
-  modbus_parse_write_multiple_command(answ.data, 5u, &command);
-  
-  if (command.address != holdings_address
-      || command.count != holdings_count)
-    MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-  
-  MODBUS_RETURN(instance, MODBUS_SUCCESS);
 }
 
 uint16_t modbus_crc16(const uint8_t *buffer, uint16_t buffer_length)
