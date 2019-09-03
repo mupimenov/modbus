@@ -1488,12 +1488,14 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
 
 int modbus_io(struct modbus_instance *instance)
 {
-  const struct modbus_functions *functions = instance->functions;
+  const struct modbus_functions *functions;
   struct modbus_request req;
   int ret;
   
   if (!instance)
     return -1;
+	
+	functions = instance->functions;
   
   ret = modbus_receive_request(instance, &req);
   if (ret < 0)
