@@ -1504,6 +1504,8 @@ int modbus_io(struct modbus_instance *instance)
   
   if (!instance)
     return -1;
+	
+	functions = instance->functions;
   
   ret = modbus_receive_request(instance, &req);
   if (ret < 0)
