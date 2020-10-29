@@ -227,12 +227,11 @@ static uint16_t crc16(const uint8_t *buffer, uint16_t buffer_length)
 {
   uint8_t crc_hi = 0xFF; /* high CRC byte initialized */
   uint8_t crc_lo = 0xFF; /* low CRC byte initialized */
-  unsigned int i; /* will index into CRC lookup */
   
   /* pass through message buffer */
   while (buffer_length--)
   {
-    i = crc_hi ^ *buffer++; /* calculate the CRC  */
+    unsigned int i = crc_hi ^ *buffer++; /* calculate the CRC  */
     crc_hi = crc_lo ^ table_crc_hi[i];
     crc_lo = table_crc_lo[i];
   }
@@ -972,9 +971,9 @@ static void _modbus_set_bits_from_bytes(uint8_t *tbits, uint16_t address, uint16
   int shift = 0;
   
   for (i = address; i < address + count; i++) {
-    tbits[i] = data[(i - address) / 8] & (1 << shift) ? 1 : 0;
+    tbits[i] = (data[(i - address) / 8] & (1 << shift)) ? 1 : 0;
     /* gcc doesn't like: shift = (++shift) % 8; */
-    shift++;
+    ++shift;
     shift %= 8;
   }
 }
@@ -1499,7 +1498,7 @@ static int modbus_write_read_regs_cmd(struct modbus_instance *instance, struct m
 
 int modbus_io(struct modbus_instance *instance)
 {
-  const struct modbus_functions *functions = instance->functions;
+  const struct modbus_functions *functions;
   struct modbus_request req;
   int ret;
   
@@ -1509,6 +1508,8 @@ int modbus_io(struct modbus_instance *instance)
   ret = modbus_receive_request(instance, &req);
   if (ret < 0)
     return ret;
+  
+  functions = instance->functions;
   
   if (functions->open)
   {
@@ -1815,7 +1816,7 @@ int modbus_write_coils(struct modbus_instance *instance, uint16_t device_address
   
   command.address = coils_address;
   command.count = coils_count;
-  command.bytes = (coils_count >> 8) + (coils_count & 7? 1u: 0u);
+  command.bytes = (coils_count >> 8) + ((coils_count & 7)? 1u: 0u);
   len = modbus_put_write_multiple_command(&command, instance->send_buffer + len, len);
   
   d = 0u;
