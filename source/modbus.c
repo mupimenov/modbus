@@ -351,8 +351,8 @@ static size_t modbus_end_answer(struct modbus_instance *instance, size_t len)
   case MODBUS_TCP:
     (void)crc_calculated;
     
-    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET] = (len-MODBUS_TCP_FUNCTION_OFFSET-1) >> 8;
-    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET + 1] = (len-MODBUS_TCP_FUNCTION_OFFSET-1) & 0xFF;
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET] = (len-MODBUS_TCP_UNIT_IDENT_OFFSET) >> 8;
+    instance->send_buffer[MODBUS_TCP_LENGTH_OFFSET + 1] = (len-MODBUS_TCP_UNIT_IDENT_OFFSET) & 0xFF;
     
     break;
   }
