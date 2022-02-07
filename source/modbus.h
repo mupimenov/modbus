@@ -137,6 +137,7 @@ extern "C" {
     enum modbus_transport transport;
     // address
     uint8_t address;
+    int (*check_address)(struct modbus_instance *instance, uint8_t address);
     // status
     uint32_t error;
   };
