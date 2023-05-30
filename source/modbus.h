@@ -76,13 +76,6 @@ extern "C" {
     MODBUS_DATA_TYPE_HALF_WORD
   };
   
-  //struct modbus_answer {
-  //  enum modbus_answer_error error;
-  //  enum modbus_answer_data_type dtype;
-  //  uint8_t *data;
-  //  uint16_t dlen;
-  //};
-  
   enum modbus_table {
     MODBUS_TABLE_COILS,
     MODBUS_TABLE_DISCRETE_INPUTS,
@@ -94,17 +87,23 @@ extern "C" {
     MODBUS_LOCK,
     MODBUS_UNLOCK
   };
+
+  struct modbus_instance;
   
   struct modbus_bits_subtable {
     uint16_t address;
     uint16_t count;
     uint8_t *bits;
+    void (*before_read_bits)(struct modbus_instance *instance, uint16_t address, uint16_t count);
+    void (*after_write_bits)(struct modbus_instance *instance, uint16_t address, uint16_t count);
   };
   
   struct modbus_regs_subtable {
     uint16_t address;
     uint16_t count;
     uint16_t *regs;
+    void (*before_read_regs)(struct modbus_instance *instance, uint16_t address, uint16_t count);
+    void (*after_write_regs)(struct modbus_instance *instance, uint16_t address, uint16_t count);
   };
   
   struct modbus_functions;
