@@ -564,7 +564,8 @@ static int _modbus_read_io_status(uint16_t address, int count,
 }
 
 static int _modbus_find_bits_row(const struct modbus_bits_subtable *table,
-                                 uint16_t address, uint16_t count, const struct modbus_bits_subtable **row)
+                                 uint16_t address, uint16_t count,
+                                 const struct modbus_bits_subtable **row, uint16_t *offset)
 {
   uint16_t i = 0;
   uint16_t last_address = address + count;
@@ -580,6 +581,7 @@ static int _modbus_find_bits_row(const struct modbus_bits_subtable *table,
         && (last_address > table[i].address && last_address <= (table[i].address + table[i].count)))
     {
       *row = &table[i];
+      *offset = address - table[i].address;
       return 0;
     }
     ++i;
@@ -596,6 +598,9 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
   size_t len;
   size_t i;
   const struct modbus_bits_subtable *row;
+  uint16_t offset;
+  int shift;
+  int one_byte;
   
   int ret = modbus_parse_read_command(req->data, req->dlen, &command);
   if (ret < 0)
@@ -612,15 +617,13 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
-  for (i = 0; i < command.count; ++i)
+  row = (table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table);
+  if (_modbus_find_bits_row(row, command.address, 1U, &row, &offset) < 0
+      || (command.count > 1 && _modbus_find_bits_row(row, command.address + command.count - 1, 1U, &row, &offset) < 0))
   {
-    if (_modbus_find_bits_row((table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table),
-                              command.address + i, 1U, &row) < 0)
-    {
-      modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
-      
-      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-    }
+    modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
+    
+    MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
   if (functions->before_read_table)
@@ -636,14 +639,35 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
   if (functions->lock)
     functions->lock(instance, table, MODBUS_LOCK);
   
+  row = (table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table);
+  shift = 0;
+  one_byte = 0;
   for (i = 0; i < command.count; ++i)
   {
-    (void)_modbus_find_bits_row((table == MODBUS_TABLE_COILS? instance->coil_table: instance->discrete_table),
-                                command.address + i, 1U, &row);
-    if (row->before_read_bits)
-      row->before_read_bits(instance, command.address + i, 1U);
-    len = _modbus_read_io_status(command.address + i, 1U, row->bits, instance->send_buffer, len);
+    uint8_t bit = 0;
+    if (_modbus_find_bits_row(row, command.address + i, 1U, &row, &offset) < 0)
+    {
+      bit = 0;
+    }
+    else
+    {
+      if (row->before_read_bits)
+        row->before_read_bits(instance, command.address + i, 1U);
+      bit = row->bits[offset];
+    }
+    
+    one_byte |= bit << shift;
+    if (shift == 7)
+    {
+      instance->send_buffer[len++] = one_byte;
+      one_byte = shift = 0;
+    } else {
+      shift++;
+    }
   }
+  
+  if (shift != 0)
+    instance->send_buffer[len++] = one_byte;
   
   if (functions->lock)
     functions->lock(instance, table, MODBUS_UNLOCK);
@@ -714,15 +738,13 @@ static int _modbus_read_regs(struct modbus_instance *instance, struct modbus_req
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
-  for (i = 0; i < command.count; ++i)
+  row = (table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table);
+  if (_modbus_find_regs_row(row, command.address, 1U, &row, &offset) < 0
+      || (command.count > 1 && _modbus_find_regs_row(row, command.address + command.count - 1, 1U, &row, &offset) < 0))
   {
-    if (_modbus_find_regs_row((table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table),
-                              command.address + i, 1U, &row, &offset) < 0)
-    {
-      modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
-      
-      MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
-    }
+    modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
+    
+    MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
   if (functions->before_read_table)
@@ -738,14 +760,21 @@ static int _modbus_read_regs(struct modbus_instance *instance, struct modbus_req
   if (functions->lock)
     functions->lock(instance, table, MODBUS_LOCK);
   
+  row = (table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table);
   for (i = 0; i < command.count; ++i)
   {
-    (void)_modbus_find_regs_row((table == MODBUS_TABLE_INPUT_REGISTERS? instance->input_table: instance->holding_table),
-                                command.address + i, 1U, &row, &offset);
-    if (row->before_read_regs)
-      row->before_read_regs(instance, command.address + i, 1U);
-    instance->send_buffer[len++] = row->regs[offset] >> 8;
-    instance->send_buffer[len++] = row->regs[offset] & 0xFF;
+    if (_modbus_find_regs_row(row, command.address + i, 1U, &row, &offset) < 0)
+    {
+      instance->send_buffer[len++] = 0;
+      instance->send_buffer[len++] = 0;
+    }
+    else
+    {
+      if (row->before_read_regs)
+        row->before_read_regs(instance, command.address + i, 1U);
+      instance->send_buffer[len++] = row->regs[offset] >> 8;
+      instance->send_buffer[len++] = row->regs[offset] & 0xFF;
+    }
   }
   
   if (functions->lock)
@@ -790,6 +819,7 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
   const struct modbus_functions *functions = instance->functions;
   size_t len;
   const struct modbus_bits_subtable *row;
+  uint16_t offset;
   
   int ret = modbus_parse_write_bit_command(req->data, req->dlen, &command);
   if (ret < 0)
@@ -806,7 +836,7 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
-  if (_modbus_find_bits_row(instance->coil_table, command.address, 1U, &row) < 0)
+  if (_modbus_find_bits_row(instance->coil_table, command.address, 1U, &row, &offset) < 0)
   {
     modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
     
@@ -827,7 +857,15 @@ static int modbus_write_coil_cmd(struct modbus_instance *instance, struct modbus
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
   
-  row->bits[command.address] = command.data? 1U: 0U;
+  if (command.data == 0xFF00)
+  {
+    row->bits[offset] = 1U;
+  }
+  else if (command.data == 0x0000)
+  {
+    row->bits[offset] = 0U;
+  }
+  
   if (row->after_write_bits)
     row->after_write_bits(instance, command.address, 1U);
   
@@ -979,14 +1017,14 @@ static int modbus_put_write_multiple_command(const struct modbus_write_multiple_
   return (dlen + 5);
 }
 
-static void _modbus_set_bits_from_bytes(uint8_t *tbits, uint16_t address, uint16_t count,
+static void _modbus_set_bits_from_bytes(uint8_t *tbits, uint16_t coil_offset, uint16_t count,
                                         const uint8_t *data)
 {
   unsigned int i;
-  int shift = 0;
+  int shift = coil_offset % 8;
   
-  for (i = address; i < address + count; i++) {
-    tbits[i] = (data[(i - address) / 8] & (1 << shift)) ? 1 : 0;
+  for (i = coil_offset; i < coil_offset + count; i++) {
+    tbits[i] = (data[i / 8] & (1 << shift)) ? 1 : 0;
     /* gcc doesn't like: shift = (++shift) % 8; */
     ++shift;
     shift %= 8;
@@ -1002,6 +1040,7 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
   size_t len;
   size_t i;
   const struct modbus_bits_subtable *row;
+  uint16_t offset;
   
   int ret = modbus_parse_write_multiple_command(req->data, req->dlen, &command);
   if (ret < 0)
@@ -1018,9 +1057,10 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
+  row = instance->coil_table;
   for (i = 0; i < command.count; ++i)
   {
-    if (_modbus_find_bits_row(instance->coil_table, command.address + i, 1U, &row) < 0)
+    if (_modbus_find_bits_row(row, command.address + i, 1U, &row, &offset) < 0)
     {
       modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
       
@@ -1042,10 +1082,11 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_COILS, MODBUS_LOCK);
   
+  row = instance->coil_table;
   for (i = 0; i < command.count; ++i)
   {
-    (void)_modbus_find_bits_row(instance->coil_table, command.address + i, 1U, &row);
-    _modbus_set_bits_from_bytes(row->bits, command.address + i, 1U, req->data + MODBUS_WRITE_MULTIPLE_DATA_OFFSET);
+    (void)_modbus_find_bits_row(row, command.address + i, 1U, &row, &offset);
+    _modbus_set_bits_from_bytes(row->bits + offset, i, 1U, req->data + MODBUS_WRITE_MULTIPLE_DATA_OFFSET);
     if (row->after_write_bits)
       row->after_write_bits(instance, command.address + i, 1U);
   }
@@ -1097,9 +1138,10 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
     MODBUS_RETURN(instance, MODBUS_BAD_PARAMS);
   }
   
+  row = instance->holding_table;
   for (i = 0; i < command.count; ++i)
   {
-    if (_modbus_find_regs_row(instance->holding_table, command.address + i, 1U, &row, &offset) < 0)
+    if (_modbus_find_regs_row(row, command.address + i, 1U, &row, &offset) < 0)
     {
       modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_ADDRESS, IS_BROADCAST(req));
       
@@ -1121,9 +1163,10 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
   if (functions->lock)
     functions->lock(instance, MODBUS_TABLE_HOLDING_REGISTERS, MODBUS_LOCK);
   
+  row = instance->holding_table;
   for (i = 0, j = 0; i < command.count; ++i, j += 2)
   {
-    (void)_modbus_find_regs_row(instance->holding_table, command.address + i, 1U, &row, &offset);
+    (void)_modbus_find_regs_row(row, command.address + i, 1U, &row, &offset);
     /* 6 and 7 = first value */
     row->regs[offset] = (req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j] << 8)
       + req->data[MODBUS_WRITE_MULTIPLE_DATA_OFFSET + j + 1];
