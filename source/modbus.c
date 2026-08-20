@@ -612,7 +612,7 @@ static int _modbus_read_bits(struct modbus_instance *instance, struct modbus_req
     MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
   }
   
-  if (command.count < 1 || command.count >= MODBUS_READ_COILS_MAX_COUNT)
+  if (command.count < 1 || command.count > MODBUS_READ_COILS_MAX_COUNT)
   {
     modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
     
@@ -735,7 +735,7 @@ static int _modbus_read_regs(struct modbus_instance *instance, struct modbus_req
     MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
   }
   
-  if (command.count < 1 || command.count >= MODBUS_READ_REGS_MAX_COUNT)
+  if (command.count < 1 || command.count > MODBUS_READ_REGS_MAX_COUNT)
   {
     modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
     
@@ -1055,7 +1055,7 @@ static int modbus_write_multiple_coils_cmd(struct modbus_instance *instance, str
     MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
   }
   
-  if (command.count < 1 || command.count >= MODBUS_WRITE_COILS_MAX_COUNT)
+  if (command.count < 1 || command.count > MODBUS_WRITE_COILS_MAX_COUNT)
   {
     modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
     
@@ -1138,7 +1138,7 @@ static int modbus_write_multiple_regs_cmd(struct modbus_instance *instance, stru
     MODBUS_RETURN(instance, MODBUS_BAD_COMMAND);
   }
   
-  if (command.count < 1 || command.count >= MODBUS_WRITE_REGS_MAX_COUNT)
+  if (command.count < 1 || command.count > MODBUS_WRITE_REGS_MAX_COUNT)
   {
     modbus_send_error(instance, req->address, req->function, MODBUS_ERROR_ILLEGAL_DATA_VALUE, IS_BROADCAST(req));
     
